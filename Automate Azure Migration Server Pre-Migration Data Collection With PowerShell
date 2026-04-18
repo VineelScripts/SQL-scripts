@@ -1,0 +1,159 @@
+Run the script in PowerShell ISE (as Administrator):
+Write-Host "=============================================" -ForegroundColor Cyan
+Write-Host "      SERVER INFORMATION COLLECTION TOOL" -ForegroundColor Cyan
+Write-Host "=============================================`n" -ForegroundColor Cyan
+
+
+$serverInput = Read-Host "Which machines do you wish to gather data on?
+(Enter server hostnames separated by commas, e.g., FileServer01, WebServer05, DBServer12)
+`nEnter server names"
+
+$servers = $serverInput.Split(',').Trim() | Where-Object { $_ }
+
+
+if (-not $servers) {
+    Write-Host "`nError: No servers entered. Please provide at least one server name.`n" -ForegroundColor Red
+    exit
+}
+
+$results = @()
+$offlineCount = 0
+$onlineCount = 0
+
+
+foreach ($server in $servers) {
+    # Create server info object
+    $serverInfo = [PSCustomObject]@{
+        Hostname        = $server
+        IPAddress       = "N/A"
+        RAM_GB          = "N/A"
+        DriveVolumes    = "N/A"
+        OperatingSystem = "N/A"
+        Status          = "Unknown"
+    }
+
+    Write-Host "`nProcessing $server..." -ForegroundColor Yellow
+    
+    try {
+        # Check server reachability
+        $ping = Test-Connection -ComputerName $server -Count 1 -ErrorAction Stop
+        
+        $serverInfo.IPAddress = $ping.IPV4Address.IPAddressToString
+        $serverInfo.Status = "Online"
+        $onlineCount++
+        
+
+        $sysInfo = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $server -ErrorAction Stop
+        $osInfo = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $server -ErrorAction Stop
+        $disks = Get-WmiObject -Class Win32_LogicalDisk -ComputerName $server -Filter "DriveType=3" -ErrorAction Stop
+
+
+        $serverInfo.RAM_GB = [math]::Round($sysInfo.TotalPhysicalMemory / 1GB, 2)
+        
+
+        if ($disks) {
+            $diskInfo = $disks | ForEach-Object {
+                $sizeGB = [math]::Round($_.Size / 1GB, 2)
+                $freeGB = [math]::Round($_.FreeSpace / 1GB, 2)
+                "$($_.DeviceID) (Size: $sizeGB GB | Free: $freeGB GB)"
+            }
+            $serverInfo.DriveVolumes = $diskInfo -join "`n"
+        } else {
+            $serverInfo.DriveVolumes = "No drives found"
+        }
+        
+
+        $serverInfo.OperatingSystem = $osInfo.Caption.Replace('Microsoft ', '')
+        
+        Write-Host "  - Successfully collected data" -ForegroundColor Green
+    }
+    catch {
+        $serverInfo.Status = "Offline"
+        $offlineCount++
+        Write-Host "  - Server unreachable or access denied" -ForegroundColor Red
+    }
+
+    $results += $serverInfo
+}
+
+
+$timestamp = Get-Date -Format "yyyyMMdd-HHmm"
+$csvPath = "ServerReport_$timestamp.csv"
+
+
+$results | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+
+
+Write-Host "`n=============================================" -ForegroundColor Cyan
+Write-Host "              COLLECTION SUMMARY" -ForegroundColor Cyan
+Write-Host "=============================================" -ForegroundColor Cyan
+Write-Host " Servers processed: $($servers.Count)" -ForegroundColor White
+Write-Host " Online servers:    $onlineCount" -ForegroundColor Green
+Write-Host " Offline servers:   $offlineCount" -ForegroundColor Red
+Write-Host " Report saved to:   $csvPath" -ForegroundColor Yellow
+Write-Host "=============================================`n" -ForegroundColor Cyan
+
+
+if (Test-Path $csvPath) {
+    Write-Host "Opening report..." -ForegroundColor Cyan
+    Start-Process $csvPath
+}
+.\powershell_script.ps1
+
+When prompted, enter server names:
+Which machines do you wish to gather data on?
+
+(Enter server hostnames separated by commas, e.g., FileServer01, WebServer05, DBServer12)
+
+Enter server names: FileServer01, WebServer05, DBServer12
+
+View real-time progress:
+Processing FileServer01…
+
+  – Successfully collected data
+
+Processing WebServer05…
+
+  – Successfully collected data
+
+Processing DBServer12…
+
+  – Server unreachable or access denied
+
+Get final summary:
+           COLLECTION SUMMARY
+
+=============================================
+
+ Servers processed: 3
+
+ Online servers:    2
+
+ Offline servers:   1
+
+ Report saved to:   ServerReport_20250718-1845.csv
+
+CSV Output Example:
+Hostname,IPAddress,RAM_GB,DriveVolumes,OperatingSystem,Status
+
+FileServer01,192.168.1.10,64.00,”C: (Size: 100 GB | Free: 25 GB)
+
+D: (Size: 500 GB | Free: 150 GB)”,Windows Server 2022,Online
+
+WebServer05,192.168.1.15,32.00,”C: (Size: 120 GB | Free: 45 GB)”,Windows Server 2019,Online
+
+DBServer12,N/A,N/A,N/A,N/A,Offline
+
+Requirements:
+
+Run in PowerShell ISE as Administrator
+Execution Policy set to allow scripts:
+Powershell Command:
+
+Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+Network connectivity to target servers
+Windows Management Instrumentation (WMI) access to servers
+User account with admin privileges on target servers
+
+https://cloudmigrationmindset.com/automate-azure-migration-server-pre-migration-data-collection-with-powershell/?fsp_sid=341
