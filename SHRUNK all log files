@@ -1,0 +1,59 @@
+Script to SHRUNK all log files in the server instance.------
+Set NoCount On
+Declare @DBName varchar(128)
+Declare @LogFileName Varchar(128)
+Declare @CursorSyntax Varchar(max)
+Declare @Logfiles table
+(
+DBName varchar(128),
+LogFileName varchar(128)
+)
+
+if ((Select @@version) like '%Microsoft SQL server 2005%') or ((Select @@version) like '%microsoft SQL server 2008%')
+Select @CursorSyntax = '
+ Select DB_NAME(dbs.database_id), mf.name from sys.master_files mf 
+ join sys.databases dbs on dbs.database_id=mf.database_id 
+ and dbs.database_id<>2 
+ and mf.type=1 
+ and dbs.state_desc=''ONLINE''
+ and dbs.is_in_standby = 0 
+ and dbs.is_read_only = 0 
+ Order by mf.Name
+ '
+else 
+Select @CursorSyntax = '
+ Select DB_NAME(dbs.database_id), mf.name from sys.master_files mf 
+ join sys.databases dbs on dbs.database_id=mf.database_id 
+ and dbs.database_id<>2 
+ and mf.type=1 
+ and dbs.state_desc=''ONLINE''
+ and dbs.is_in_standby = 0 
+ and dbs.is_read_only = 0
+ and dbs.Name not in (
+ Select dbs.Name
+ from sys.dm_hadr_availability_replica_states ars
+ Inner Join sys.databases dbs 
+ ON ars.replica_id = dbs.replica_id
+ Where ars.role <> 1) 
+ Order by mf.Name
+ '
+Select * from @Logfiles 
+--=============================================== 
+-- Get list of DBs by executing the dynamic SQL
+--===============================================
+delete from @Logfiles
+insert into @Logfiles
+exec (@CursorSyntax)
+
+Declare ShrunkLogFiles_Cur Cursor for
+ Select DBName, LogFileName from @Logfiles --where DBName not in ('PPP_INT_PROD_MIDB', 'PPP_INT_UAT_CoreDB')
+Open ShrunkLogFiles_Cur 
+Fetch next from ShrunkLogFiles_Cur into @DBName, @LogFileName
+While @@FETCH_STATUS=0
+Begin
+ Set @CursorSyntax='Use [' + @DBName + ']; ' + Char(10) + 'DBCC ShrinkFile(''' + @LogFileName + ''', 1)';
+ exec(@CursorSyntax)
+Fetch next from ShrunkLogFiles_Cur into @DBName, @LogFileName
+End
+Close ShrunkLogFiles_Cur
+Deallocate ShrunkLogFiles_Cur
