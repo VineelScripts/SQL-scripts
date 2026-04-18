@@ -1,0 +1,38 @@
+ Script to compress tempDB
+
+use tempdb
+GO
+--Uncomment the lines and run the script only after business hours.
+--DBCC FREEPROCCACHE -- clean cache
+--DBCC DROPCLEANBUFFERS -- clean buffers
+--DBCC FREESYSTEMCACHE ('ALL') -- clean system cache
+--DBCC FREESESSIONCACHE -- clean session cache
+GO
+
+--Script to SHRUNK all files in tempdb.--
+Set NoCount On
+Declare @DBName varchar(128)
+Declare @FileName Varchar(128)
+Declare @files table
+(
+DBName varchar(128),
+FileName varchar(128)
+)
+Insert into @files
+ Select DB_NAME(dbs.database_id), mf.name from sys.master_files mf
+ join sys.databases dbs on dbs.database_id=mf.database_id
+ and dbs.database_id=2
+ 
+Declare ShrunkLogFiles_Cur Cursor for
+ Select DBName, FileName from @files
+Open ShrunkLogFiles_Cur
+Fetch next from ShrunkLogFiles_Cur into @DBName, @FileName
+While @@FETCH_STATUS=0
+Begin
+ Declare @CursorSyntax varchar(max)
+ Set @CursorSyntax='Use [' + @DBName + ']; ' + Char(10) + 'DBCC ShrinkFile(''' + @FileName + ''', 126)';
+ exec(@CursorSyntax)
+Fetch next from ShrunkLogFiles_Cur into @DBName, @FileName
+End
+Close ShrunkLogFiles_Cur
+Deallocate ShrunkLogFiles_Cur
