@@ -1,0 +1,141 @@
+<#
+BMC Helix ITSM - Auto-Assignment Script (PowerShell)
+-----------------------------------------------------
+Polls Incident (HPD:Help Desk) records where:
+    - Support Group = <YOUR_SUPPORT_GROUP>
+    - Assignee is blank (unassigned)
+and updates the Assignee field to your name.
+
+Requirements:
+    - Windows PowerShell 5.1+ or PowerShell 7+ (no extra modules needed)
+    - An AR login with API access enabled (your normal Helix login often works)
+
+Usage:
+    Run once (test):        .\helix_auto_assign.ps1 -Once
+    Run continuously:       .\helix_auto_assign.ps1
+#>
+
+param(
+    [switch]$Once
+)
+
+# ------------------- CONFIG (edit these) -------------------
+$BaseUrl        = "https://closebrothers-smartit.onbmc.com"   # your Helix base URL, no trailing slash
+$ApiUser        = "your_ar_username"
+$ApiPass        = "your_ar_password"
+
+$SupportGroup   = "Your Support Group Name"    # exact value as shown in Helix
+$AssigneeName   = "Venna Vineel"                # exact "Assignee" value to set
+
+$PollIntervalSeconds = 120
+$FormName       = "HPD:Help Desk"
+# -------------------------------------------------------------
+
+function Write-Log {
+    param([string]$Message, [string]$Level = "INFO")
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Write-Host "$timestamp [$Level] $Message"
+}
+
+function Connect-Helix {
+    $url = "$BaseUrl/api/jwt/login"
+    $body = @{
+        username = $ApiUser
+        password = $ApiPass
+    }
+    try {
+        $response = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/x-www-form-urlencoded"
+        return $response   # JWT token as plain text
+    } catch {
+        throw "Login failed: $($_.Exception.Message)"
+    }
+}
+
+function Disconnect-Helix {
+    param([string]$Token)
+    $url = "$BaseUrl/api/jwt/logout"
+    try {
+        Invoke-RestMethod -Uri $url -Method Post -Headers @{ Authorization = "AR-JWT $Token" } | Out-Null
+    } catch {
+        Write-Log "Logout warning: $($_.Exception.Message)" "WARN"
+    }
+}
+
+function Get-UnassignedIncidents {
+    param([string]$Token)
+
+    $qualification = "'Support Group Name'=`"$SupportGroup`" AND 'Assignee'=`$NULL`$"
+    $url = "$BaseUrl/api/arsys/v1/entry/$FormName" +
+           "?q=$([uri]::EscapeDataString($qualification))" +
+           "&fields=$([uri]::EscapeDataString('values(Incident Number,Assignee,Support Group Name,Status)'))"
+
+    try {
+        $response = Invoke-RestMethod -Uri $url -Method Get -Headers @{ Authorization = "AR-JWT $Token" }
+        return $response.entries
+    } catch {
+        Write-Log "Query failed: $($_.Exception.Message)" "ERROR"
+        return @()
+    }
+}
+
+function Set-IncidentAssignee {
+    param(
+        [string]$Token,
+        [string]$EntryId,
+        [string]$IncidentNumber
+    )
+
+    $url = "$BaseUrl/api/arsys/v1/entry/$FormName/$EntryId"
+    $payload = @{
+        values = @{
+            Assignee = $AssigneeName
+            Status   = "Assigned"
+        }
+    } | ConvertTo-Json
+
+    try {
+        Invoke-RestMethod -Uri $url -Method Put -Headers @{
+            Authorization  = "AR-JWT $Token"
+            "Content-Type" = "application/json"
+        } -Body $payload | Out-Null
+        Write-Log "Assigned $IncidentNumber -> $AssigneeName"
+        return $true
+    } catch {
+        Write-Log "Failed to assign $IncidentNumber : $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+function Invoke-PollCycle {
+    $token = Connect-Helix
+    try {
+        $incidents = Get-UnassignedIncidents -Token $token
+        Write-Log "Found $($incidents.Count) unassigned incident(s) in '$SupportGroup'"
+
+        foreach ($entry in $incidents) {
+            $entryId = $entry.entry_id
+            if (-not $entryId) { $entryId = $entry._id }
+            $incidentNumber = $entry.values.'Incident Number'
+            if (-not $incidentNumber) { $incidentNumber = "UNKNOWN" }
+
+            Set-IncidentAssignee -Token $token -EntryId $entryId -IncidentNumber $incidentNumber
+        }
+    } finally {
+        Disconnect-Helix -Token $token
+    }
+}
+
+# ------------------- Main -------------------
+if ($Once) {
+    Invoke-PollCycle
+} else {
+    Write-Log "Starting Helix auto-assignment poller (Ctrl+C to stop)"
+    while ($true) {
+        try {
+            Invoke-PollCycle
+        } catch {
+            Write-Log "Error during poll cycle: $($_.Exception.Message)" "ERROR"
+        }
+        Start-Sleep -Seconds $PollIntervalSeconds
+    }
+}
